@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 
@@ -41,7 +42,7 @@ export default function AuthForm() {
 
   return <main className="auth-page">
     <section className="auth-card">
-      <a className="brand-lockup" href="/" aria-label="Ритм дня"><span aria-hidden="true" className="brand-mark">✳</span><span>Ритм <span className="brand-amp">дня</span></span></a>
+      <Link className="brand-lockup" href="/" aria-label="Ритм дня"><span aria-hidden="true" className="brand-mark">✳</span><span>Ритм <span className="brand-amp">дня</span></span></Link>
       <p className="eyebrow">ЛИЧНЫЙ ДНЕВНИК</p>
       <h1>{mode === "login" ? "С возвращением" : "Создайте аккаунт"}</h1>
       <p className="auth-description">{mode === "login" ? "Войдите, чтобы продолжить заботиться о себе." : "Записи и настройки будут сохранены в вашем аккаунте."}</p>

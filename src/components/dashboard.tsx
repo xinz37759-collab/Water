@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import NextImage from "next/image";
 import { authClient } from "@/lib/auth-client";
 import { deleteAllLocalAttachments, deleteLocalAttachment, exportLocalAttachments, readLocalAttachment, saveLocalAttachment } from "@/lib/local-attachments";
 
@@ -283,7 +284,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
   const [recipeServings, setRecipeServings] = useState("1");
   const [recipeError, setRecipeError] = useState("");
 
-  async function refreshBudget(period: BudgetPeriod = budgetPeriod) {
+  const refreshBudget = useCallback(async (period: BudgetPeriod = budgetPeriod) => {
     try {
       const pending = localStorage.getItem(pendingBudgetKey);
       if (pending) {
@@ -307,9 +308,9 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
         }
       } catch { /* no cached budget */ }
     }
-  }
+  }, [budgetPeriod, pendingBudgetKey]);
 
-  useEffect(() => { void refreshBudget(budgetPeriod); }, [budgetPeriod]);
+  useEffect(() => { void refreshBudget(budgetPeriod); }, [refreshBudget, budgetPeriod]);
 
   useEffect(() => {
     let cancelled = false;
@@ -330,7 +331,8 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
                 void saveLocalAttachment(id, userId, dataUrl).catch(() => undefined);
                 legacyMeta.push({ id, ownerType: "food_entry", ownerId: entry.id, kind: "meal_photo", mimeType: dataUrl.match(/^data:([^;,]+)/)?.[1] ?? "image/jpeg", sizeBytes: dataUrlByteSize(dataUrl), createdAt: entry.createdAt });
                 legacyData[id] = dataUrl;
-                const { photoDataUrl: _legacyPhoto, ...withoutPhoto } = entry;
+                const withoutPhoto = { ...entry };
+                delete withoutPhoto.photoDataUrl;
                 localEntries.push(withoutPhoto);
               } else localEntries.push(entry);
             }
@@ -385,7 +387,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     };
     void loadEntries();
     return () => { cancelled = true; };
-  }, [storageKey, deletedStorageKey]);
+  }, [storageKey, deletedStorageKey, attachmentsStorageKey, userId]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -724,9 +726,6 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
   const recipeTotalCalories = recipeReady
     ? resolvedRecipeIngredients.reduce((total, ingredient) => total + ingredient.caloriesPer100 * ingredient.grams / 100, 0)
     : 0;
-  const recipeTotalWeight = recipeReady
-    ? resolvedRecipeIngredients.reduce((total, ingredient) => total + ingredient.grams, 0)
-    : 0;
   const recipeServingsCount = Math.max(1, Number(recipeServings) || 1);
   const recipeCaloriesPerServing = Math.round(recipeTotalCalories / recipeServingsCount);
   const calculatedCalories = recipeReady
@@ -762,12 +761,12 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
         const dateKey = localDateKey(new Date(entry.createdAt));
         const inPeriod = diaryPeriod === "all" || (diaryPeriod === "today" ? dateKey === today : dateKey >= weekStart && dateKey <= today);
         const matchesFilter = diaryFilter === "all"
-          || (diaryFilter === "photo" && (() => { const item = attachmentForOwner(entry.id, entry.kind === "expense" ? "receipt" : "meal_photo"); return Boolean(item && attachmentData[item.id]); })())
+          || (diaryFilter === "photo" && (() => { const item = attachments.find((candidate) => candidate.ownerId === entry.id && candidate.kind === (entry.kind === "expense" ? "receipt" : "meal_photo")); return Boolean(item && attachmentData[item.id]); })())
           || (diaryFilter !== "photo" && entry.kind === diaryFilter);
         return inPeriod && matchesFilter;
       })
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [entries, diaryFilter, diaryPeriod]);
+  }, [entries, attachments, attachmentData, diaryFilter, diaryPeriod]);
   const diaryGroups = useMemo(() => {
     const grouped = new Map<string, Entry[]>();
     for (const entry of diaryEntries) {
@@ -1451,7 +1450,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
               <div className="meal-time">{meal.time}</div><span aria-hidden="true" className="meal-emoji">{meal.icon}</span>
               <div className="meal-copy"><strong>{meal.label}</strong><span>{mealDescription(meal.value)}</span></div>
               {mealPhoto(meal.value) ? (
-                <button aria-label={`Открыть фото: ${meal.label}`} className="meal-photo-button" onClick={() => { setPhotoViewerLabel(`Фото блюда: ${meal.label}`); setPhotoViewer(mealPhoto(meal.value) ?? null); }} type="button"><img alt="Фото блюда" src={mealPhoto(meal.value)} /></button>
+                <button aria-label={`Открыть фото: ${meal.label}`} className="meal-photo-button" onClick={() => { setPhotoViewerLabel(`Фото блюда: ${meal.label}`); setPhotoViewer(mealPhoto(meal.value) ?? null); }} type="button"><NextImage alt="Фото блюда" height={80} src={mealPhoto(meal.value)!} unoptimized width={80} /></button>
               ) : (
                 <button aria-label={`Добавить фото к ${meal.label}`} className="meal-photo-placeholder" onClick={() => openModal("food", meal.value)} type="button"><span aria-hidden="true">▧</span></button>
               )}
@@ -1473,7 +1472,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
                 const source = attachment ? attachmentData[attachment.id] : undefined;
                 return (
                   <article className="photo-gallery-card" key={entry.id}>
-                    {source && <button aria-label={`Открыть фото: ${entry.name}`} className="gallery-photo-button" onClick={() => { setPhotoViewerLabel(`Фото блюда ${entry.name}`); setPhotoViewer(source); }} type="button"><img alt={`Фото блюда ${entry.name}`} src={source} /></button>}
+                    {source && <button aria-label={`Открыть фото: ${entry.name}`} className="gallery-photo-button" onClick={() => { setPhotoViewerLabel(`Фото блюда ${entry.name}`); setPhotoViewer(source); }} type="button"><NextImage alt={`Фото блюда ${entry.name}`} height={480} src={source} unoptimized width={480} /></button>}
                     {attachment && <button className="attachment-delete" onClick={() => void removeAttachment(attachment)} type="button">Удалить фото</button>}
                     <strong>{entry.name}</strong><span>{mealName} · {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" }).format(new Date(entry.createdAt))}</span>
                   </article>
@@ -1527,7 +1526,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
                         <time className="diary-entry-time" dateTime={entry.createdAt}>{new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(entry.createdAt))}</time>
                         <span aria-hidden="true" className="diary-entry-icon">{details.icon}</span>
                         <div className="diary-entry-copy"><strong>{details.title}</strong><span>{details.subtitle}</span></div>
-                        {photo && <button aria-label={entry.kind === "expense" ? "Открыть фото чека" : "Открыть фото блюда"} className="diary-entry-photo" onClick={() => { setPhotoViewerLabel(entry.kind === "expense" ? "Фото чека" : "Фото блюда"); setPhotoViewer(photo); }} type="button"><img alt={entry.kind === "expense" ? "Фото чека" : "Фото блюда"} src={photo} /></button>}
+                        {photo && <button aria-label={entry.kind === "expense" ? "Открыть фото чека" : "Открыть фото блюда"} className="diary-entry-photo" onClick={() => { setPhotoViewerLabel(entry.kind === "expense" ? "Фото чека" : "Фото блюда"); setPhotoViewer(photo); }} type="button"><NextImage alt={entry.kind === "expense" ? "Фото чека" : "Фото блюда"} height={86} src={photo} unoptimized width={86} /></button>}
                         {attachment && <button aria-label="Удалить фото вложения" className="attachment-delete-icon" onClick={() => void removeAttachment(attachment)} title="Удалить фото отдельно от записи" type="button">⌫</button>}
                         {entry.kind !== "expense" && <button aria-label={favorites.some((favorite) => favorite.entry.id === entry.id) ? "Убрать из избранного" : "Добавить в избранное"} className={favorites.some((favorite) => favorite.entry.id === entry.id) ? "favorite-toggle selected" : "favorite-toggle"} onClick={() => void toggleFavorite(entry)} title="Избранное" type="button">★</button>}
                         {entry.kind === "expense" && entry.merchant && <button aria-label={favoriteStores.some((store) => store.merchant.toLocaleLowerCase("ru-RU") === entry.merchant.toLocaleLowerCase("ru-RU")) ? "Убрать магазин из избранного" : "Добавить магазин в избранное"} className={favoriteStores.some((store) => store.merchant.toLocaleLowerCase("ru-RU") === entry.merchant.toLocaleLowerCase("ru-RU")) ? "favorite-toggle selected" : "favorite-toggle"} onClick={() => void toggleFavoriteStore(entry)} title="Избранный магазин" type="button">★</button>}
@@ -1789,7 +1788,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
                         <input accept="image/*" className="photo-file-input" onChange={(event) => handlePhotoChange(event.target.files?.[0])} type="file" />
                       </label>
                       {photoError && <p className="photo-error" role="alert">{photoError}</p>}
-                      {form.photoDataUrl && <img alt="Предпросмотр фото блюда" className="food-photo-preview" src={form.photoDataUrl} />}
+                      {form.photoDataUrl && <NextImage alt="Предпросмотр фото блюда" className="food-photo-preview" height={900} src={form.photoDataUrl} unoptimized width={1200} />}
                       <p className="photo-help">Фото уменьшается в браузере перед сохранением на этом устройстве.</p>
                     </div>
                   )}
@@ -1818,7 +1817,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
                         <span className="photo-upload-control">{form.receiptDataUrl ? "Заменить фото чека" : "＋ Добавить чек"}</span>
                         <input accept="image/*" className="photo-file-input" onChange={(event) => handlePhotoChange(event.target.files?.[0], "receipt")} type="file" />
                       </label>
-                      {form.receiptDataUrl && <img alt="Предпросмотр фото чека" className="food-photo-preview" src={form.receiptDataUrl} />}
+                      {form.receiptDataUrl && <NextImage alt="Предпросмотр фото чека" className="food-photo-preview" height={1200} src={form.receiptDataUrl} unoptimized width={900} />}
                       {photoError && <p className="photo-error" role="alert">{photoError}</p>}
                     </div>
                   )}
@@ -1840,7 +1839,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
         <div className="photo-viewer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPhotoViewer(null); }}>
           <section aria-label={`Полноэкранный просмотр: ${photoViewerLabel}`} aria-modal="true" className="photo-viewer" role="dialog">
             <button aria-label="Закрыть фото" className="modal-close photo-viewer-close" onClick={() => setPhotoViewer(null)} type="button">×</button>
-            <img alt={photoViewerLabel} src={photoViewer} />
+            <NextImage alt={photoViewerLabel} height={1200} src={photoViewer} unoptimized width={1600} />
           </section>
         </div>
       )}

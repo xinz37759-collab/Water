@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import NextImage from "next/image";
-import { authClient } from "@/lib/auth-client";
 import { deleteAllLocalAttachments, deleteLocalAttachment, exportLocalAttachments, readLocalAttachment, saveLocalAttachment } from "@/lib/local-attachments";
+
+const localBudgetKey = "nutrition-water.local-device.budget.v1";
 
 type EntryKind = "food" | "drink" | "expense";
 type MealType = "breakfast" | "lunch" | "snack" | "dinner";
@@ -258,7 +259,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
   const [attachments, setAttachments] = useState<AttachmentMeta[]>([]);
   const [attachmentData, setAttachmentData] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
-  const [syncStatus, setSyncStatus] = useState("Подключаем дневник к аккаунту…");
+  const [syncStatus, setSyncStatus] = useState("Сохранено на этом устройстве");
   const [modal, setModal] = useState<ModalState | null>(null);
   const [selectedKind, setSelectedKind] = useState<EntryKind>("food");
   const [form, setForm] = useState(emptyForm);
@@ -286,29 +287,22 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
 
   const refreshBudget = useCallback(async (period: BudgetPeriod = budgetPeriod) => {
     try {
-      const pending = localStorage.getItem(pendingBudgetKey);
-      if (pending) {
-        const draft = JSON.parse(pending) as { period: BudgetPeriod; amount: number; currency: string };
-        const sync = await fetch("/api/budget", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) });
-        if (!sync.ok) throw new Error("budget sync pending");
-        localStorage.removeItem(pendingBudgetKey);
+      const saved = localStorage.getItem(`${localBudgetKey}.${period}`);
+      if (!saved) {
+        setBudgetInfo(null);
+        setBudgetAmount("");
+        return;
       }
-      const response = await fetch(`/api/budget?period=${period}`, { cache: "no-store" });
-      if (!response.ok) return;
-      const result = await response.json() as BudgetInfo;
-      setBudgetInfo(result);
-      setBudgetAmount(result.amountMinor == null ? "" : String(result.amountMinor / 100));
+      const budget = JSON.parse(saved) as { amount: number; currency: string };
+      const amountMinor = Math.round(budget.amount * 100);
+      setBudgetInfo({ period, periodStart: "", currency: budget.currency, amountMinor, spentMinor: 0, remainingMinor: amountMinor });
+      setBudgetAmount(String(budget.amount));
     } catch {
-      try {
-        const pending = JSON.parse(localStorage.getItem(pendingBudgetKey) ?? "null") as { period: BudgetPeriod; amount: number; currency: string } | null;
-        if (pending?.period === period) {
-          const amountMinor = Math.round(pending.amount * 100);
-          setBudgetInfo({ period, periodStart: "", currency: pending.currency, amountMinor, spentMinor: 0, remainingMinor: amountMinor });
-          setBudgetAmount(String(pending.amount));
-        }
-      } catch { /* no cached budget */ }
+      localStorage.removeItem(`${localBudgetKey}.${period}`);
+      setBudgetInfo(null);
+      setBudgetAmount("");
     }
-  }, [budgetPeriod, pendingBudgetKey]);
+  }, [budgetPeriod]);
 
   useEffect(() => { void refreshBudget(budgetPeriod); }, [refreshBudget, budgetPeriod]);
 
@@ -316,7 +310,6 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     let cancelled = false;
     const loadEntries = async () => {
       let localEntries: Entry[] = [];
-      let pendingDeletes: { id: string; kind: EntryKind }[] = [];
       try {
         const saved = localStorage.getItem(storageKey);
         if (saved) {
@@ -344,45 +337,20 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
             }
           }
         }
-        const deleted = localStorage.getItem(deletedStorageKey);
-        if (deleted) pendingDeletes = JSON.parse(deleted) as { id: string; kind: EntryKind }[];
+        const deleted = JSON.parse(localStorage.getItem(deletedStorageKey) ?? "[]") as { id: string; kind: EntryKind }[];
+        if (deleted.length) {
+          const deletedIds = new Set(deleted.map((item) => item.id));
+          localEntries = localEntries.filter((entry) => !deletedIds.has(entry.id));
+          localStorage.removeItem(deletedStorageKey);
+        }
       } catch {
         localStorage.removeItem(storageKey);
         localStorage.removeItem(deletedStorageKey);
       }
-      try {
-        const stillPending: { id: string; kind: EntryKind }[] = [];
-        for (const deletion of pendingDeletes) {
-          const response = await fetch("/api/entries", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(deletion) });
-          if (!response.ok) stillPending.push(deletion);
-        }
-        pendingDeletes = stillPending;
-        localStorage.setItem(deletedStorageKey, JSON.stringify(pendingDeletes));
-        const deletedIds = new Set(pendingDeletes.map((deletion) => deletion.id));
-        const response = await fetch("/api/entries", { cache: "no-store" });
-        if (!response.ok) throw new Error("Не удалось загрузить записи");
-        const result = await response.json() as { entries: Entry[] };
-        const remoteEntries = (Array.isArray(result.entries) ? result.entries : []).filter((entry) => !deletedIds.has(entry.id));
-        localEntries = localEntries.filter((entry) => !deletedIds.has(entry.id));
-        const remoteIds = new Set(remoteEntries.map((entry) => entry.id));
-        const merged: Entry[] = [...remoteEntries];
-        for (const entry of localEntries.filter((candidate) => !remoteIds.has(candidate.id))) {
-          const saved = await fetch("/api/entries", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) });
-          if (!saved.ok) throw new Error("entry sync pending");
-          merged.push(entry);
-        }
-        if (!cancelled) {
-          setEntries(merged.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
-          setSyncStatus("Синхронизировано с аккаунтом");
-        }
-      } catch {
-        if (!cancelled) {
-          const deletedIds = new Set(pendingDeletes.map((deletion) => deletion.id));
-          setEntries(localEntries.filter((entry) => !deletedIds.has(entry.id)));
-          setSyncStatus("Офлайн: изменения пока только на этом устройстве");
-        }
-      } finally {
-        if (!cancelled) setLoaded(true);
+      if (!cancelled) {
+        setEntries(localEntries.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+        setSyncStatus("Сохранено на этом устройстве");
+        setLoaded(true);
       }
     };
     void loadEntries();
@@ -400,25 +368,10 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
       } catch { localStorage.removeItem(attachmentsStorageKey); }
       let combined = local;
       try {
-        const pendingDeletes = JSON.parse(localStorage.getItem(deletedAttachmentsKey) ?? "[]") as string[];
-        const stillPending: string[] = [];
-        for (const id of pendingDeletes) {
-          const removed = await fetch("/api/attachments", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-          if (!removed.ok) stillPending.push(id);
-        }
-        localStorage.setItem(deletedAttachmentsKey, JSON.stringify(stillPending));
-        const response = await fetch("/api/attachments", { cache: "no-store" });
-        if (response.ok) {
-          const result = await response.json() as { attachments: AttachmentMeta[] };
-          const deletedIds = new Set(stillPending);
-          const remote = (Array.isArray(result.attachments) ? result.attachments : []).filter((item) => !deletedIds.has(item.id));
-          const remoteIds = new Set(remote.map((item) => item.id));
-          combined = [...remote, ...local.filter((item) => !remoteIds.has(item.id))];
-          for (const pending of local.filter((item) => !remoteIds.has(item.id))) {
-            await fetch("/api/attachments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pending) });
-          }
-        }
-      } catch { /* local IndexedDB remains the source while offline */ }
+        const deletedIds = new Set(JSON.parse(localStorage.getItem(deletedAttachmentsKey) ?? "[]") as string[]);
+        combined = local.filter((item) => !deletedIds.has(item.id));
+        localStorage.removeItem(deletedAttachmentsKey);
+      } catch { /* Keep local attachment metadata */ }
       if (cancelled) return;
       setAttachments(combined);
       const nextData: Record<string, string> = {};
@@ -437,46 +390,18 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
   }, [attachments, attachmentsStorageKey]);
 
   useEffect(() => {
-    let cancelled = false;
     let localFavorites: Favorite[] = [];
     let localStores: FavoriteStore[] = [];
-    let pendingFavoriteDeletes: string[] = [];
     try {
       const saved = localStorage.getItem(favoritesStorageKey);
       if (saved) localFavorites = JSON.parse(saved) as Favorite[];
       const savedStores = localStorage.getItem(favoriteStoresStorageKey);
       if (savedStores) localStores = JSON.parse(savedStores) as FavoriteStore[];
-      pendingFavoriteDeletes = JSON.parse(localStorage.getItem(pendingFavoriteDeletesKey) ?? "[]") as string[];
-      setFavorites(localFavorites);
-      setFavoriteStores(localStores);
+      const pendingDeletes = new Set(JSON.parse(localStorage.getItem(pendingFavoriteDeletesKey) ?? "[]") as string[]);
+      setFavorites(localFavorites.filter((item) => !pendingDeletes.has(item.id)));
+      setFavoriteStores(localStores.filter((item) => !pendingDeletes.has(item.id)));
+      localStorage.removeItem(pendingFavoriteDeletesKey);
     } catch { localStorage.removeItem(favoritesStorageKey); localStorage.removeItem(favoriteStoresStorageKey); }
-    fetch("/api/favorites", { cache: "no-store" }).then(async (response) => {
-      if (!response.ok) return;
-      const stillPending: string[] = [];
-      for (const id of pendingFavoriteDeletes) {
-        const deleted = await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-        if (!deleted.ok) stillPending.push(id);
-      }
-      localStorage.setItem(pendingFavoriteDeletesKey, JSON.stringify(stillPending));
-      const result = await response.json() as { favorites: Favorite[]; stores?: FavoriteStore[] };
-      if (!cancelled) {
-        const deletedIds = new Set(stillPending);
-        const remote = (Array.isArray(result.favorites) ? result.favorites : []).filter((item) => !deletedIds.has(item.id));
-        const remoteIds = new Set(remote.map((favorite) => favorite.id));
-        const merged = [...remote, ...localFavorites.filter((favorite) => !deletedIds.has(favorite.id) && !remoteIds.has(favorite.id))];
-        setFavorites(merged);
-        const remoteStores = (Array.isArray(result.stores) ? result.stores : []).filter((item) => !deletedIds.has(item.id));
-        const remoteStoreIds = new Set(remoteStores.map((store) => store.id));
-        setFavoriteStores([...remoteStores, ...localStores.filter((store) => !deletedIds.has(store.id) && !remoteStoreIds.has(store.id))]);
-        for (const store of localStores.filter((item) => !deletedIds.has(item.id) && !remoteStoreIds.has(item.id))) {
-          await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...store, type: "store" }) });
-        }
-        for (const favorite of localFavorites.filter((item) => !deletedIds.has(item.id) && !remoteIds.has(item.id))) {
-          await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(favorite) });
-        }
-      }
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
   }, [userId, favoritesStorageKey, favoriteStoresStorageKey, pendingFavoriteDeletesKey]);
 
   useEffect(() => {
@@ -523,55 +448,6 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
       setPreferencesLoaded(true);
     }
   }, [preferencesStorageKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadPreferencesFromAccount = async () => {
-      try {
-        const pending = localStorage.getItem(pendingPreferencesKey);
-        if (pending) {
-          const synced = await fetch("/api/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: pending });
-          if (!synced.ok) throw new Error("preferences sync pending");
-          localStorage.removeItem(pendingPreferencesKey);
-        }
-        const response = await fetch("/api/preferences", { cache: "no-store" });
-        if (!response.ok) return;
-        const result = await response.json() as {
-          preferences: { currency?: string; mass_unit?: string; volume_unit?: string; reminders_enabled?: number; reminder_time?: string } | null;
-          goals: { water_goal_ml?: number | null; calories_goal_kcal?: number | null; protein_goal_g?: number | null; fat_goal_g?: number | null; carbs_goal_g?: number | null } | null;
-        };
-        let saved: Partial<UserPreferences> = {};
-        try { saved = JSON.parse(localStorage.getItem(preferencesStorageKey) ?? "{}") as Partial<UserPreferences>; } catch { /* use defaults */ }
-        const p = result.preferences;
-        const g = result.goals;
-        const loaded: UserPreferences = p || g ? {
-          ...DEFAULT_PREFERENCES,
-          photoCompression: saved.photoCompression === "detail" ? "detail" : "balanced",
-          ...(g ? { waterGoalMl: g.water_goal_ml ?? null, caloriesGoalKcal: g.calories_goal_kcal ?? null, proteinGoalG: g.protein_goal_g ?? null, fatGoalG: g.fat_goal_g ?? null, carbsGoalG: g.carbs_goal_g ?? null } : {}),
-          ...(p ? { currency: String(p.currency ?? "UZS"), massUnit: p.mass_unit === "kg" ? "kg" : "g", volumeUnit: p.volume_unit === "l" ? "l" : "ml", remindersEnabled: Boolean(p.reminders_enabled), reminderTime: String(p.reminder_time ?? "10:00") } : {}),
-        } : { ...DEFAULT_PREFERENCES, ...saved };
-        if (cancelled) return;
-        setPreferences(loaded);
-        setSettingsDraft({
-          waterGoal: loaded.waterGoalMl == null ? "" : String(loaded.waterGoalMl / (loaded.volumeUnit === "l" ? 1000 : 1)),
-          caloriesGoal: loaded.caloriesGoalKcal == null ? "" : String(loaded.caloriesGoalKcal),
-          proteinGoal: loaded.proteinGoalG == null ? "" : String(loaded.proteinGoalG),
-          fatGoal: loaded.fatGoalG == null ? "" : String(loaded.fatGoalG),
-          carbsGoal: loaded.carbsGoalG == null ? "" : String(loaded.carbsGoalG),
-          volumeUnit: loaded.volumeUnit, massUnit: loaded.massUnit, currency: loaded.currency,
-          remindersEnabled: loaded.remindersEnabled, reminderTime: loaded.reminderTime,
-          photoCompression: loaded.photoCompression,
-        });
-        if (!p && !g) {
-          await fetch("/api/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferences: loaded, goals: loaded }) });
-        }
-      } catch {
-        // Preferences remain available from the account-specific local cache while offline.
-      }
-    };
-    void loadPreferencesFromAccount();
-    return () => { cancelled = true; };
-  }, [preferencesStorageKey, pendingPreferencesKey]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -866,16 +742,9 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
       photoCompression: settingsDraft.photoCompression,
     };
     setPreferences(nextPreferences);
-    try {
-      const response = await fetch("/api/preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferences: nextPreferences, goals: nextPreferences }) });
-      if (!response.ok) throw new Error("save failed");
-      setSettingsMessage("Настройки сохранены в аккаунте.");
-      setSyncStatus("Синхронизировано с аккаунтом");
-    } catch {
-      localStorage.setItem(pendingPreferencesKey, JSON.stringify({ preferences: nextPreferences, goals: nextPreferences }));
-      setSettingsMessage("Настройки сохранены на этом устройстве; синхронизация возобновится при подключении.");
-      setSyncStatus("Офлайн: настройки сохранены локально");
-    }
+    localStorage.setItem(preferencesStorageKey, JSON.stringify(nextPreferences));
+    setSettingsMessage("Настройки сохранены на этом устройстве.");
+    setSyncStatus("Сохранено на этом устройстве");
   }
 
   async function saveBudget() {
@@ -884,19 +753,9 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
       setBudgetMessage("Введите лимит больше нуля.");
       return;
     }
-    try {
-      const response = await fetch("/api/budget", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period: budgetPeriod, amount, currency: preferences.currency }) });
-      if (!response.ok) throw new Error("save failed");
-      localStorage.removeItem(pendingBudgetKey);
-      await refreshBudget();
-      setBudgetMessage("Лимит сохранён в аккаунте.");
-    } catch {
-      const pending = { period: budgetPeriod, amount, currency: preferences.currency };
-      localStorage.setItem(pendingBudgetKey, JSON.stringify(pending));
-      const amountMinor = Math.round(amount * 100);
-      setBudgetInfo({ period: budgetPeriod, periodStart: "", currency: preferences.currency, amountMinor, spentMinor: 0, remainingMinor: amountMinor });
-      setBudgetMessage("Лимит сохранён на устройстве и синхронизируется при подключении.");
-    }
+    localStorage.setItem(`${localBudgetKey}.${budgetPeriod}`, JSON.stringify({ amount, currency: preferences.currency }));
+    await refreshBudget();
+    setBudgetMessage("Лимит сохранён на этом устройстве.");
   }
 
   async function requestReminderPermission() {
@@ -955,26 +814,10 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     setFavoriteStores([]);
     setPreferences(DEFAULT_PREFERENCES);
     setSettingsDraft(DEFAULT_SETTINGS_DRAFT);
-    setSettingsMessage("Локальные данные этого аккаунта удалены. Данные в аккаунте не затронуты.");
-  }
-
-  async function deleteAccount() {
-    if (!window.confirm("Удалить аккаунт и все записи, цели, расходы, фото на этом устройстве и связанные данные? Восстановить их будет нельзя.")) return;
-    if (window.prompt('Для подтверждения введите DELETE') !== "DELETE") {
-      setSettingsMessage("Удаление аккаунта отменено: подтверждение не совпало.");
-      return;
-    }
-    setSettingsMessage("Удаляем аккаунт и данные…");
-    try {
-      const response = await fetch("/api/account", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation: "DELETE" }) });
-      if (!response.ok) throw new Error("delete failed");
-      for (const key of Object.keys(localStorage)) if (key.startsWith(`nutrition-water.${encodeURIComponent(userId)}.`)) localStorage.removeItem(key);
-      await deleteAllLocalAttachments(userId).catch(() => undefined);
-      await authClient.signOut().catch(() => undefined);
-      window.location.assign("/login");
-    } catch {
-      setSettingsMessage("Не удалось удалить аккаунт. Проверьте подключение и повторите попытку.");
-    }
+    for (const period of ["day", "week", "month"]) localStorage.removeItem(`${localBudgetKey}.${period}`);
+    setBudgetInfo(null);
+    setBudgetAmount("");
+    setSettingsMessage("Локальные данные удалены с этого устройства.");
   }
 
   function handlePhotoChange(file?: File, kind: "meal_photo" | "receipt" = "meal_photo") {
@@ -1021,7 +864,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     return attachments.find((item) => item.ownerId === ownerId && item.kind === kind);
   }
 
-  async function saveAttachment(ownerType: AttachmentMeta["ownerType"], ownerId: string, kind: AttachmentMeta["kind"], dataUrl: string, syncToServer = true) {
+  async function saveAttachment(ownerType: AttachmentMeta["ownerType"], ownerId: string, kind: AttachmentMeta["kind"], dataUrl: string) {
     const id = newEntryId();
     const mimeType = dataUrl.match(/^data:([^;,]+)/)?.[1] ?? "image/jpeg";
     const sizeBytes = dataUrlByteSize(dataUrl);
@@ -1030,10 +873,6 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
       await saveLocalAttachment(id, userId, dataUrl);
       setAttachmentData((current) => ({ ...current, [id]: dataUrl }));
       setAttachments((current) => [...current, attachment]);
-      if (syncToServer) {
-        const response = await fetch("/api/attachments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(attachment) });
-        if (!response.ok) setSyncStatus("Фото сохранено на устройстве; метаданные синхронизируются позже");
-      }
     } catch {
       setPhotoError("Не удалось сохранить файл во внутреннем хранилище браузера.");
     }
@@ -1043,12 +882,6 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
     setAttachmentData((current) => { const next = { ...current }; delete next[attachment.id]; return next; });
     await deleteLocalAttachment(attachment.id, userId).catch(() => undefined);
-    let pending: string[] = [];
-    try { pending = JSON.parse(localStorage.getItem(deletedAttachmentsKey) ?? "[]") as string[]; } catch { pending = []; }
-    if (!pending.includes(attachment.id)) pending.push(attachment.id);
-    localStorage.setItem(deletedAttachmentsKey, JSON.stringify(pending));
-    const response = await fetch("/api/attachments", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: attachment.id }) }).catch(() => null);
-    if (response?.ok) localStorage.setItem(deletedAttachmentsKey, JSON.stringify(pending.filter((id) => id !== attachment.id)));
   }
 
   function addWater(volumeMl: number) {
@@ -1064,16 +897,9 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
   }
 
   async function persistEntry(entry: Entry): Promise<boolean> {
-    try {
-      const response = await fetch("/api/entries", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(entry) });
-      if (!response.ok) throw new Error("save failed");
-      setSyncStatus("Синхронизировано с аккаунтом");
-      if (entry.kind === "expense") void refreshBudget();
-      return true;
-    } catch {
-      setSyncStatus("Офлайн: запись сохранена на этом устройстве");
-      return false;
-    }
+    setSyncStatus("Сохранено на этом устройстве");
+    if (entry.kind === "expense") void refreshBudget();
+    return true;
   }
 
   async function toggleFavorite(entry: Entry) {
@@ -1081,21 +907,11 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     const favorite = favorites.find((item) => item.entry.id === entry.id);
     if (favorite) {
       setFavorites((current) => current.filter((item) => item.id !== favorite.id));
-      try {
-        const response = await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: favorite.id }) });
-        if (!response.ok) throw new Error("delete favorite failed");
-      } catch {
-        const pending = JSON.parse(localStorage.getItem(pendingFavoriteDeletesKey) ?? "[]") as string[];
-        if (!pending.includes(favorite.id)) pending.push(favorite.id);
-        localStorage.setItem(pendingFavoriteDeletesKey, JSON.stringify(pending));
-        setSyncStatus("Изменение избранного сохранено до восстановления сети");
-      }
       return;
     }
     const created: Favorite = { id: newEntryId(), label: entry.kind === "food" ? entry.name : entry.drinkType === "water" ? "Вода" : entry.drinkType, entry };
     setFavorites((current) => [created, ...current]);
-    const response = await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(created) }).catch(() => null);
-    if (!response?.ok) setSyncStatus("Избранное сохранено локально до синхронизации");
+    setSyncStatus("Избранное сохранено на этом устройстве");
   }
 
   async function toggleFavoriteStore(entry: ExpenseEntry) {
@@ -1103,18 +919,11 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     const existing = favoriteStores.find((store) => store.merchant.toLocaleLowerCase("ru-RU") === entry.merchant.toLocaleLowerCase("ru-RU"));
     if (existing) {
       setFavoriteStores((current) => current.filter((store) => store.id !== existing.id));
-      const response = await fetch("/api/favorites", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: existing.id }) }).catch(() => null);
-      if (!response?.ok) {
-        const pending = JSON.parse(localStorage.getItem(pendingFavoriteDeletesKey) ?? "[]") as string[];
-        if (!pending.includes(existing.id)) pending.push(existing.id);
-        localStorage.setItem(pendingFavoriteDeletesKey, JSON.stringify(pending));
-      }
       return;
     }
     const store: FavoriteStore = { id: newEntryId(), label: entry.merchant, merchant: entry.merchant, category: entry.category };
     setFavoriteStores((current) => [store, ...current]);
-    const response = await fetch("/api/favorites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...store, type: "store" }) }).catch(() => null);
-    if (!response?.ok) setSyncStatus("Магазин сохранён локально до синхронизации");
+    setSyncStatus("Магазин сохранён на этом устройстве");
   }
 
   function openFavoriteStore(store: FavoriteStore) {
@@ -1192,9 +1001,9 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
     const mealPhoto = form.photoDataUrl;
     const receiptPhoto = form.receiptDataUrl;
     void (async () => {
-      const synced = await persistEntry(entry);
-      if (entry.kind === "food" && mealPhoto) await saveAttachment("food_entry", entry.id, "meal_photo", mealPhoto, synced);
-      if (entry.kind === "expense" && receiptPhoto) await saveAttachment("transaction", entry.id, "receipt", receiptPhoto, synced);
+      await persistEntry(entry);
+      if (entry.kind === "food" && mealPhoto) await saveAttachment("food_entry", entry.id, "meal_photo", mealPhoto);
+      if (entry.kind === "expense" && receiptPhoto) await saveAttachment("transaction", entry.id, "receipt", receiptPhoto);
     })();
     setModal(null);
   }
@@ -1216,19 +1025,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
 
   function removeEntry(entryId: string) {
     const entry = entries.find((item) => item.id === entryId);
-    if (entry) {
-      const deletion = { id: entry.id, kind: entry.kind };
-      let queue: typeof deletion[] = [];
-      try { queue = JSON.parse(localStorage.getItem(deletedStorageKey) ?? "[]") as typeof deletion[]; } catch { queue = []; }
-      if (!queue.some((item) => item.id === deletion.id)) queue.push(deletion);
-      localStorage.setItem(deletedStorageKey, JSON.stringify(queue));
-      void fetch("/api/entries", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(deletion) }).then((response) => {
-        if (!response.ok) throw new Error("delete failed");
-        const pending = (JSON.parse(localStorage.getItem(deletedStorageKey) ?? "[]") as typeof deletion[]).filter((item) => item.id !== deletion.id);
-        localStorage.setItem(deletedStorageKey, JSON.stringify(pending));
-        if (entry.kind === "expense") void refreshBudget();
-      }).catch(() => setSyncStatus("Удаление сохранено и синхронизируется при подключении"));
-    }
+    if (entry?.kind === "expense") void refreshBudget();
     for (const attachment of attachments.filter((item) => item.ownerId === entryId)) void removeAttachment(attachment);
     setEntries((current) => current.filter((entry) => entry.id !== entryId));
   }
@@ -1359,7 +1156,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
             <p className="eyebrow">{sectionHeader.eyebrow}</p>
             <h1>{sectionHeader.title}</h1>
           </div>
-          <div className="topbar-account"><small className="sync-status">{syncStatus}</small><span title={email}>{email}</span><button className="button-secondary" type="button" onClick={async () => { await authClient.signOut(); window.location.assign("/login"); }}>Выйти</button></div>
+          <div className="topbar-account"><small className="sync-status">{syncStatus}</small><span title={email}>Локальный дневник</span></div>
         </header>
 
         {activeSection === "today" && <>
@@ -1617,7 +1414,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
 
         {activeSection === "settings" && (
           <section className="settings-page">
-            <div className="page-intro"><p>Задайте личные ориентиры и формат отображения. Настройки аккаунта синхронизируются с дневником.</p></div>
+            <div className="page-intro"><p>Задайте личные ориентиры и формат отображения. Настройки сохраняются в браузере на этом устройстве.</p></div>
             <form className="settings-form" onSubmit={saveSettings}>
               <section className="settings-card">
                 <div className="settings-card-heading"><span className="settings-icon">◎</span><div><h2>Ежедневные цели</h2><p>Цели показываются в сводке и прогрессе за день.</p></div></div>
@@ -1659,7 +1456,7 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
               </section>
 
               <section className="settings-card">
-                <div className="settings-card-heading"><span className="settings-icon">▧</span><div><h2>Фото и вложения</h2><p>Файлы хранятся в IndexedDB этого устройства, отдельно от записей и метаданных аккаунта.</p></div></div>
+                <div className="settings-card-heading"><span className="settings-icon">▧</span><div><h2>Фото и вложения</h2><p>Файлы и записи хранятся только в браузере на этом устройстве.</p></div></div>
                 <div className="settings-fields settings-unit-grid">
                   <label>Сжатие изображений<select value={settingsDraft.photoCompression} onChange={(event) => setSettingsDraft({ ...settingsDraft, photoCompression: event.target.value as UserPreferences["photoCompression"] })}><option value="balanced">Сбалансированное</option><option value="detail">Больше деталей</option></select></label>
                   <p className="field-help">Для чека сохраняется больше деталей, чем для фото блюда. Облачное хранилище пока не подключено.</p>
@@ -1671,17 +1468,16 @@ export default function Dashboard({ userId, email }: { userId: string; email: st
             </form>
 
             <section className="settings-card privacy-card">
-              <div className="settings-card-heading"><span className="settings-icon">⌑</span><div><h2>Данные и приватность</h2><p>Записи и цели синхронизируются с вашим аккаунтом. Фото пока остаются в этом браузере.</p></div></div>
+              <div className="settings-card-heading"><span className="settings-icon">⌑</span><div><h2>Данные и приватность</h2><p>Дневник и фотографии доступны только в этом браузере. Экспортируйте данные для резервной копии.</p></div></div>
               <div className="privacy-actions">
                 <button className="button-secondary" onClick={exportData} type="button">Экспортировать данные (JSON)</button>
                 <button className="danger-button" onClick={clearLocalData} type="button">Удалить локальные данные</button>
               </div>
-              <div className="account-delete-row"><div><strong>Удалить аккаунт и данные</strong><p>Удалятся записи, цели, расходы, вложения и профиль. Действие необратимо.</p></div><button className="danger-button" onClick={() => void deleteAccount()} type="button">Удалить аккаунт</button></div>
             </section>
           </section>
         )}
 
-        <footer className="page-footer">Записи и цели хранятся в аккаунте; фотографии блюд пока хранятся на этом устройстве.</footer>
+        <footer className="page-footer">Записи, настройки и фотографии хранятся только в браузере на этом устройстве.</footer>
       </section>
 
       <Navigation activeSection={activeSection} mobile onNavigate={setActiveSection} />

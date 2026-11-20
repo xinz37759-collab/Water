@@ -10,9 +10,7 @@
     "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
-    "@better-auth/drizzle-adapter": "^1.7.26",
     "@libsql/client": "^0.18.0",
-    "better-auth": "^1.7.26",
     "dotenv": "^18.0.10",
     "drizzle-orm": "^0.45.4",
     "next": "^15.5.6",

@@ -19,7 +19,7 @@
 
 * { box-sizing: border-box; }
 html { min-height: 100%; background: var(--canvas); }
-body { min-height: 100vh; margin: 0; color: var(--ink); background: var(--canvas); font-family: var(--font-nunito), sans-serif; font-size: 14px; }
+body { min-height: 100vh; margin: 0; color: var(--ink); background: var(--canvas); font-family: Nunito, "Avenir Next", "Trebuchet MS", Arial, sans-serif; font-size: 14px; }
 button, a { font: inherit; }
 button { color: inherit; }
 a { color: inherit; text-decoration: none; }

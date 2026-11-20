@@ -38,7 +38,13 @@ const vercelPreviewURL = process.env.VERCEL_ENV === "preview"
 const configuredBaseURL = normalizeWebOrigin(process.env.BETTER_AUTH_URL);
 const vercelDeploymentURL = normalizeWebOrigin(process.env.VERCEL_URL, true);
 const baseURL = vercelPreviewURL || configuredBaseURL || vercelDeploymentURL || "http://localhost:3000";
-const trustedOrigins = [baseURL];
+const vercelOrigins = [
+  normalizeWebOrigin("https://water-r66w.vercel.app"),
+  normalizeWebOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL, true),
+  normalizeWebOrigin(process.env.VERCEL_URL, true),
+  normalizeWebOrigin(process.env.VERCEL_BRANCH_URL, true),
+].filter((origin): origin is string => origin !== null);
+const trustedOrigins = [...new Set([baseURL, ...vercelOrigins])];
 
 // Next.js can pick another port when 3000 is occupied. Allow loopback origins
 // on any port only for local development; production stays pinned to BETTER_AUTH_URL.

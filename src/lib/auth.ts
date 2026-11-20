@@ -8,7 +8,11 @@ import * as schema from "@/lib/db/auth-schema";
 
 const drizzleDb = drizzle(db, { schema });
 const secret = process.env.BETTER_AUTH_SECRET;
-const trustedOrigins = [process.env.BETTER_AUTH_URL || "http://localhost:3000"];
+const vercelPreviewURL = process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : null;
+const baseURL = vercelPreviewURL || process.env.BETTER_AUTH_URL || "http://localhost:3000";
+const trustedOrigins = [baseURL];
 
 // Next.js can pick another port when 3000 is occupied. Allow loopback origins
 // on any port only for local development; production stays pinned to BETTER_AUTH_URL.
@@ -23,7 +27,7 @@ if (process.env.NODE_ENV === "production" && (!secret || secret.length < 32)) {
 export const auth = betterAuth({
   appName: "Ритм дня",
   secret: secret || "local-development-secret-change-before-deploy-2026",
-  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
+  baseURL,
   trustedOrigins,
   database: drizzleAdapter(drizzleDb, { provider: "sqlite", schema, camelCase: true }),
   emailAndPassword: {

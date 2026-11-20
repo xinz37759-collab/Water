@@ -9,7 +9,14 @@ const globalForDb = globalThis as typeof globalThis & {
 };
 
 function createDatabaseClient(): Client {
-  const url = process.env.TURSO_DATABASE_URL;
+  const configuredUrl = process.env.TURSO_DATABASE_URL?.trim();
+  const wrappedQuote = configuredUrl?.[0];
+  const hasMatchingQuotes =
+    (wrappedQuote === '"' && configuredUrl?.endsWith('"')) ||
+    (wrappedQuote === "'" && configuredUrl?.endsWith("'"));
+  const url = configuredUrl && hasMatchingQuotes
+    ? configuredUrl.slice(1, -1).trim()
+    : configuredUrl;
   const authToken = process.env.TURSO_AUTH_TOKEN;
 
   if (url) {

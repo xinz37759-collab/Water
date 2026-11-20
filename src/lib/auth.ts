@@ -8,10 +8,36 @@ import * as schema from "@/lib/db/auth-schema";
 
 const drizzleDb = drizzle(db, { schema });
 const secret = process.env.BETTER_AUTH_SECRET;
-const vercelPreviewURL = process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
+function cleanEnvironmentValue(value: string | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const isWrappedInQuotes =
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"));
+  return isWrappedInQuotes ? trimmed.slice(1, -1).trim() : trimmed;
+}
+
+function normalizeWebOrigin(value: string | undefined, assumeHttps = false) {
+  const cleaned = cleanEnvironmentValue(value);
+  if (!cleaned) return null;
+
+  try {
+    const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(cleaned);
+    const parsed = new URL(hasScheme || !assumeHttps ? cleaned : `https://${cleaned}`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+const vercelPreviewURL = process.env.VERCEL_ENV === "preview"
+  ? normalizeWebOrigin(process.env.VERCEL_URL, true)
   : null;
-const baseURL = vercelPreviewURL || process.env.BETTER_AUTH_URL || "http://localhost:3000";
+const configuredBaseURL = normalizeWebOrigin(process.env.BETTER_AUTH_URL);
+const vercelDeploymentURL = normalizeWebOrigin(process.env.VERCEL_URL, true);
+const baseURL = vercelPreviewURL || configuredBaseURL || vercelDeploymentURL || "http://localhost:3000";
 const trustedOrigins = [baseURL];
 
 // Next.js can pick another port when 3000 is occupied. Allow loopback origins

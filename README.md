@@ -10,7 +10,7 @@
 4. Примените миграции: `npm run db:migrate`.
 5. Запустите приложение: `npm run dev`.
 
-Вход через `http://localhost:3000/login` позволяет создать аккаунт и войти по email и паролю. В локальной разработке Better Auth использует локальный ключ; для production задайте случайный `BETTER_AUTH_SECRET` длиной не менее 32 символов и `BETTER_AUTH_URL` с публичным HTTPS-адресом.
+Вход через `http://localhost:3000/login` позволяет создать аккаунт и войти по email и паролю. В локальной разработке Better Auth использует локальный ключ; для production задайте случайный `BETTER_AUTH_SECRET` (или `AUTH_SECRET`) длиной не менее 32 символов и `BETTER_AUTH_URL` с публичным HTTPS-адресом.
 
 Для подключения к удалённой базе Turso укажите `TURSO_DATABASE_URL` и `TURSO_AUTH_TOKEN` в `.env.local`. В production переменная `TURSO_DATABASE_URL` обязательна. Не добавляйте реальные токены в репозиторий.
 
@@ -38,7 +38,7 @@
 ### Vercel
 
 - Импортируйте GitHub-репозиторий `xinz37759-collab/Water`. Vercel автоматически определит Next.js; используйте команды установки `npm install` и сборки `npm run build`, не задавая отдельную папку вывода.
-- Добавьте в Vercel Environment Variables: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` и случайный `BETTER_AUTH_SECRET` не короче 32 символов. Укажите `BETTER_AUTH_URL` как точный HTTPS-origin production сайта, без завершающего `/` и без пути `/login`.
+- Добавьте в Vercel Environment Variables: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` и случайный `BETTER_AUTH_SECRET` (или `AUTH_SECRET`) не короче 32 символов. Укажите `BETTER_AUTH_URL` как точный HTTPS-origin production сайта, без завершающего `/` и без пути `/login`.
 - Добавьте Turso-переменные и секрет для Preview-сборок тоже (лучше использовать отдельную Preview-базу). Preview-домен авторизации определяется автоматически по системным `VERCEL_ENV` и `VERCEL_URL`; для production используйте основной URL из `BETTER_AUTH_URL`.
 - Перед первым входом примените миграции к выбранной Turso-базе: `npm run db:migrate` из окружения с её URL и токеном. Vercel автоматически миграции не запускает. После изменения переменных окружения создайте новый deployment.
 - Не оставляйте `TURSO_DATABASE_URL` пустым: локальный SQLite fallback в production намеренно отключён, а файловая система Vercel не является постоянной базой данных.

@@ -7,7 +7,7 @@ import { db } from "@/lib/db/client";
 import * as schema from "@/lib/db/auth-schema";
 
 const drizzleDb = drizzle(db, { schema });
-const secret = process.env.BETTER_AUTH_SECRET;
+const secret = process.env.BETTER_AUTH_SECRET?.trim() || process.env.AUTH_SECRET?.trim();
 function cleanEnvironmentValue(value: string | undefined) {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -47,7 +47,7 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 if (process.env.NODE_ENV === "production" && (!secret || secret.length < 32)) {
-  throw new Error("Set BETTER_AUTH_SECRET to a random value of at least 32 characters.");
+  throw new Error("Set BETTER_AUTH_SECRET (or AUTH_SECRET) to a random value of at least 32 characters.");
 }
 
 export const auth = betterAuth({
